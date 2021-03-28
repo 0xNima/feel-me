@@ -1,0 +1,20 @@
+[package]
+name = "feel-me"
+version = "0.1.0"
+authors = ["object-ptr <neemaiox@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+teloxide = { version = "0.4.0", features = ["macros", "auto-send"]}
+pretty_env_logger = "0.4.0"
+log = "0.4.8"
+tokio = { version =  "1.3.0", features = ["rt-multi-thread", "macros"] }
+diesel = { version = "1.4.4", features = ["postgres", "chrono"] }
+dotenv = "0.15.0"
+chrono = "0.4"
+uuid = { version = "0.8", features = ["serde", "v4"] }
+redis = "0.20.0"
+tokio-stream = "0.1.3"
+lazy_static = "1.4.0"
