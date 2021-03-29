@@ -10,7 +10,7 @@ pub mod models;
 use diesel::prelude::*;
 use diesel::pg::PgConnection;
 use uuid::Uuid;
-use models::{User, History, NewHistory};
+use models::{User, History, NewHistory, Blacklist, NewBlacklist};
 
 pub struct DBManager {
     connection: PgConnection,
@@ -115,6 +115,30 @@ impl DBManager {
         }
         false
     }
+
+    pub fn set_to_blacklist(&self, rter_id: i64, rted_id: i64) {
+        use schema::blacklists;
+        let blacklist = NewBlacklist {
+            reporter_id: rter_id,
+            reported_id: rted_id,
+            is_active: true
+        };
+        diesel::insert_into(blacklists::table)
+        .values(&blacklist)
+        .execute(&self.connection)
+        .expect("Error on set to blacklist");
+    }
+
+    pub fn is_in_blacklist(&self, reporter: &User, rted_id: i64) -> bool {
+        use schema::blacklists::dsl::*;
+
+        let blacklist = Blacklist::belonging_to(reporter)
+        .filter(reported_id.eq(rted_id))
+        .load::<Blacklist>(&self.connection)
+        .unwrap_or(Vec::new());
+
+        blacklist.len() > 0
+    }
 }
 
 fn create_nickname() -> String{
@@ -135,6 +159,8 @@ lazy_static! {
     pub static ref FEEDBACK: i16 = 1;
 
     pub static ref REPORT: i16 = 2;
+
+    pub static ref UNREPORT: i16 = 3;
 }
 
 pub struct Res{
@@ -143,4 +169,32 @@ pub struct Res{
     pub to_id: Option<String>,
     pub msg_id: Option<i32>,
     pub file_unique_id: Option<String>
+}
+
+
+#[cfg(test)]
+mod tests {
+    extern crate dotenv;
+    use super::*;
+    use dotenv::dotenv;
+    use std::env;
+
+    #[test]
+    fn is_in_blacklist() {
+        dotenv().ok();
+        let databse_url = env::var("DATABASE_URL").expect("Error on getting DATABASE_URL from environment variabls");
+        let db_manager = DBManager::new(&databse_url);
+        let res = db_manager.is_in_blacklist(&User { 
+            chat_id: 100000, 
+            nickname: "nickname".into(), 
+            name: "name".into(), 
+            username: None
+        }, 100000);
+        assert_eq!(res, false);
+    }
+
+    #[test]
+    fn set_to_blacklist() {
+        assert_eq!(false, true);
+    }
 }

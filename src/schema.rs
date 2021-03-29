@@ -18,3 +18,13 @@ table! {
         file_id -> Nullable<Varchar>,
     }
 }
+
+
+table! {
+    blacklists (id) {
+        id -> Int4,
+        reporter_id -> Int8,
+        reported_id -> Int8,
+        is_active -> Bool,
+    }
+}

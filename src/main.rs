@@ -14,7 +14,6 @@ use feel_me::{DBManager, Res, HELPTEXT, LOG, FEEDBACK, REPORT};
 use redis::{Commands, RedisResult};
 
 
-
 fn handle_text(
     text: &str, 
     dbm: &DBManager, 
@@ -29,17 +28,24 @@ fn handle_text(
                         let nickname = splited[1];
                         let user = dbm.get_user_by_nickname(nickname);
                         if let Some(user) = user {
-                            let _: () = redis::cmd("SET")
+                            if user.chat_id == chat_id {
+                                response = Some(String::from("Dude?! You have schizophrenia\n Why you send music to yourself"));
+                            } else {
+                                if !dbm.is_in_blacklist(&user, chat_id) {
+                                    let _: () = redis::cmd("SET")
                                         .arg(chat_id)
                                         .arg(user.chat_id)
                                         .query(redis_con)
                                         .unwrap();
-                            return Res {
-                                text: Some(format!("Please Send the music that you want to share with {}", user.name)),
-                                show_cancel_btn: true,
-                                to_id: None,
-                                msg_id: None,
-                                file_unique_id: None
+                                    return Res {
+                                        text: Some(format!("Please Send the music that you want to share with {}", user.name)),
+                                        show_cancel_btn: true,
+                                        to_id: None,
+                                        msg_id: None,
+                                        file_unique_id: None
+                                    }
+                                }
+                                response = Some(format!("You can't send music to {}\n You are blocked", user.name));
                             }
                         } else {
                             response = Some(String::from("Oops!\nInvalid link"));
@@ -133,7 +139,7 @@ async fn callback(
                     vec![
                         vec![
                             InlineKeyboardButton::callback("Feedback".into(), format!("feedback_{}_{}_{}", cx.chat_id(), cx.update.id, audio.file_unique_id)),
-                            InlineKeyboardButton::callback("Report User".into(), format!("report_{}", cx.chat_id()))
+                            InlineKeyboardButton::callback("Report User".into(), format!("report_{}_{}", cx.chat_id(), cx.update.id))
                         ]
                     ]
                 )
@@ -169,6 +175,8 @@ async fn callback(
 async fn q_callback(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Result<(), Box<dyn Error + Send + Sync>> {
 
     if let Some(data) = cx.update.data {
+        let databse_url = env::var("DATABASE_URL").expect("Error on getting DATABASE_URL from environment variabls");
+        let redis_url = env::var("REDIS_URL").expect("Error on getting REDIS_URL from environment variabls");
 
         let id = cx.update.from.id;
         let name_ = cx.update.from.full_name();
@@ -201,14 +209,15 @@ async fn q_callback(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Result<()
 
         } else if data.starts_with("feedback_") {
             let splited: Vec<&str> = data.split("_").collect();
-
-            let databse_url = env::var("DATABASE_URL").expect("Error on getting DATABASE_URL from environment variabls");
+            let to_id = splited[1].parse::<i64>().unwrap();
             let db_manager = DBManager::new(&databse_url);
+            let target_user = db_manager.get_user_by_id(to_id);
 
-            if db_manager.history_exists(id, splited[1].parse::<i64>().unwrap(), splited[2].parse::<i32>().unwrap(), String::from(splited[3]), *FEEDBACK) {
+            if target_user.is_some() && db_manager.is_in_blacklist(&(target_user.unwrap()), id) {
+                response = "You can't send Feedback\nYou are blocked".into();
+            } else if db_manager.history_exists(id, to_id, splited[2].parse::<i32>().unwrap(), String::from(splited[3]), *FEEDBACK) {
                 response = String::from("Feedback is sent before");
             } else {
-                let redis_url = env::var("REDIS_URL").expect("Error on getting REDIS_URL from environment variabls");
                 let client = redis::Client::open(redis_url)?;
                 let mut con = client.get_connection()?;
                 let _: () = redis::cmd("SET")
@@ -222,8 +231,13 @@ async fn q_callback(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Result<()
             return Ok(())
 
         } else if data.starts_with("report_") {
-            response = "get report".into();
-
+            let splited: Vec<&str> = data.split("_").collect();
+            let to_id = splited[1].parse::<i64>().unwrap();
+            let msg_id = splited[2].parse::<i32>().unwrap();
+            let db_manager = DBManager::new(&databse_url);
+            db_manager.set_to_blacklist(id, to_id);
+            db_manager.set_history(id, to_id, *REPORT, msg_id, None);
+            response = "User is reported and blocked".into();
         } else {
             response = String::from(HELPTEXT.clone());
         }

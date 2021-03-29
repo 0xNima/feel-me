@@ -1,7 +1,8 @@
-use crate::schema::{users, histories};
+use crate::schema::{users, histories, blacklists};
 
-#[derive(Queryable, Insertable, Debug)]
+#[derive(Identifiable, Queryable, Insertable, Debug, PartialEq)]
 #[table_name="users"]
+#[primary_key(chat_id)]
 pub struct User {
     pub chat_id: i64,
     pub nickname: String,
@@ -28,4 +29,24 @@ pub struct NewHistory {
     pub history_type: i16,
     pub msg_id: i32,
     pub file_id: Option<String>
+}
+
+
+#[derive(Identifiable, Queryable, Associations, Debug, PartialEq)]
+#[table_name="blacklists"]
+#[belongs_to(User, foreign_key="reporter_id")]
+pub struct Blacklist {
+    pub id: i32,
+    pub reporter_id: i64,
+    pub reported_id: i64,
+    pub is_active: bool
+}
+
+
+#[derive(Insertable, Debug)]
+#[table_name="blacklists"]
+pub struct NewBlacklist {
+    pub reporter_id: i64,
+    pub reported_id: i64,
+    pub is_active: bool
 }
