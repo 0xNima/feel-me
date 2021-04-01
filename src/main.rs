@@ -10,101 +10,45 @@ use teloxide::{
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use std::{error::Error, env};
 use dotenv::dotenv;
-use feel_me::{DBManager, Res, HELPTEXT, LOG, FEEDBACK, REPORT};
+use feel_me::{DBManager, Res, handle_text, strings::*};
 use redis::{Commands, RedisResult};
 
-
-fn handle_text(
-    text: &str, 
-    dbm: &DBManager, 
-    chat_id: i64, 
-    redis_con: &mut redis::Connection) -> Res {  
-        let response;
-        if text.starts_with('/') {
-            let splited: Vec<&str> = text.split(' ').collect();
-            match splited[0] {
-                "/start" => {
-                    if splited.len() > 1 {
-                        let nickname = splited[1];
-                        let user = dbm.get_user_by_nickname(nickname);
-                        if let Some(user) = user {
-                            if user.chat_id == chat_id {
-                                response = Some(String::from("Dude?! You have schizophrenia\n Why you send music to yourself"));
-                            } else {
-                                if !dbm.is_in_blacklist(&user, chat_id) {
-                                    let _: () = redis::cmd("SET")
-                                        .arg(chat_id)
-                                        .arg(user.chat_id)
-                                        .query(redis_con)
-                                        .unwrap();
-                                    return Res {
-                                        text: Some(format!("Please Send the music that you want to share with {}", user.name)),
-                                        show_cancel_btn: true,
-                                        to_id: None,
-                                        msg_id: None,
-                                        file_unique_id: None
-                                    }
-                                }
-                                response = Some(format!("You can't send music to {}\n You are blocked", user.name));
-                            }
-                        } else {
-                            response = Some(String::from("Oops!\nInvalid link"));
-                        }
-                    } else {
-                        response = Some(HELPTEXT.clone());
-                    }
-                },
-                "/help" => {
-                    response = Some(HELPTEXT.clone());
-                }
-                _ => { 
-                    response = Some(String::from("Invalid Command"));
-                }
-            } 
-        } else {
-            let result: RedisResult<String> = redis::cmd("GET")
-            .arg(chat_id)
-            .query(redis_con);
-
-            if let Ok(_text) = result {
-                let splited: Vec<&str> = _text.split("_").collect();
-                if splited.len() == 3 {
-                    let _: () = redis::cmd("DEL")
-                    .arg(chat_id)
-                    .query(redis_con)
-                    .unwrap();
-                    return Res {
-                        text: Some(String::from("Feedback is sent")),
-                        show_cancel_btn: false,
-                        to_id: Some(String::from(splited[0])),
-                        msg_id: Some(splited[1].parse::<i32>().unwrap()),
-                        file_unique_id: Some(String::from(splited[2]))
-                    }
-                }
-            }
-            response = None;
-        }
-    Res { text: response, show_cancel_btn: false, to_id: None, msg_id: None, file_unique_id: None }
-}
 
 async fn callback(
     cx: UpdateWithCx<AutoSend<Bot>, Message>
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
 
-
     use feel_me::schema::users::dsl::*;
+
+    let answer_str: String; 
     
     let databse_url = env::var("DATABASE_URL").expect("Error on getting DATABASE_URL from environment variabls");
+    
     let redis_url = env::var("REDIS_URL").expect("Error on getting REDIS_URL from environment variabls");
+    
     let db_manager = DBManager::new(&databse_url);
+    
+    let client = redis::Client::open(redis_url);
 
-    let client = redis::Client::open(redis_url)?;
-    let mut con = client.get_connection()?;
+    if db_manager.is_err() || client.is_err() {
+        cx.answer(*WRONG).await?;
+        return Ok(())
+    }
 
-    let r: String; 
+    let con = client.unwrap().get_connection();
 
+    if con.is_err() {
+        cx.answer(*WRONG).await?;
+        return Ok(())
+    }
+
+    let db_manager = db_manager.unwrap();
+
+    let mut con = con.unwrap();
+    
     if let Some(text) = cx.update.text() {
         let res = handle_text(text, &db_manager, cx.chat_id(), &mut con);
+
         if let Some(response) = res.text {
             if res.show_cancel_btn {
                 cx.answer(response.clone()).reply_markup(ReplyMarkup::InlineKeyboard(
@@ -113,18 +57,25 @@ async fn callback(
                     )
                 )).await?;
                 return Ok(())
-            } else if let Some(to_id) = res.to_id {
+            }
+             
+            if let Some(to_id) = res.to_id {
                 let msg_id = res.msg_id.unwrap();
-                let file_unique_id = res.file_unique_id;
+
                 cx.requester.send_message(to_id.clone(), text).reply_to_message_id(msg_id).await?;
-                db_manager.set_history(cx.chat_id(), to_id.parse::<i64>().unwrap(), *FEEDBACK, msg_id, file_unique_id);
+
+                let res = db_manager.set_history(cx.chat_id(), to_id.parse::<i64>().unwrap(), *FEEDBACK, msg_id, res.file_unique_id);
+
+                if res.is_err() {
+                    // log error
+                }
+
                 cx.requester.send_message(cx.chat_id(), response).await?;
                 return Ok(())
-            } else {
-                r = response;
             }
+            answer_str = response;
         } else {
-            r = String::from("Invalid Message");
+            answer_str = String::from(*INVALID_MSG);
         }
     } else if let Some(audio) = cx.update.audio() {
         let target_id: RedisResult<i64> = redis::cmd("GET")
@@ -144,21 +95,26 @@ async fn callback(
                     ]
                 )
             )).await?;
+
             db_manager.set_history(cx.chat_id(), to_id, *LOG, cx.update.id, Some(audio.file_unique_id.clone()));
+
             cx.requester.send_message(cx.chat_id(), "Music Has Been send").await?;
-            let _: () = redis::cmd("DEL")
+
+            let del: RedisResult<()> = redis::cmd("DEL")
                                .arg(cx.chat_id())
-                               .query(&mut con)
-                               .unwrap();
+                               .query(&mut con);
+            if del.is_err() {
+                // log error
+            }
             return Ok(())
         } else {
-            r = String::from("The target is unknown\nClick on target user's link and then send the music");
+            answer_str = String::from(*UNKNOWN_TARGET);
         }
     } else {
-        r = String::from("Invalid message format\n");
+        answer_str = String::from(*INVALID_MSG_FORMAT);
     }
 
-    cx.answer(r).reply_markup(ReplyMarkup::InlineKeyboard(
+    cx.answer(answer_str).reply_markup(ReplyMarkup::InlineKeyboard(
         InlineKeyboardMarkup::new(
             vec![
                 vec![
@@ -185,61 +141,182 @@ async fn q_callback(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Result<()
 
         if data == "get_link" {
             use feel_me::schema::users::dsl::*;
-            let databse_url = env::var("DATABASE_URL").expect("Error on getting DATABASE_URL from environment variabls");
+
             let db_manager = DBManager::new(&databse_url);
 
+            if db_manager.is_err() {
+                cx.requester.send_message(id, *WRONG).await?;
+                return Ok(())
+            }
+
+            let db_manager = db_manager.unwrap();
+
+            let _user = db_manager.get_user_by_id(id);
+
+            if _user.is_err() {
+                cx.requester.send_message(id, *WRONG).await?;
+                return Ok(())
+            }
+
             let user_;
-            if let Some(user) = db_manager.get_user_by_id(id) {
+            
+            if let Some(user) = _user.unwrap() {
                 user_ = user
             } else {
-                user_ = db_manager.create_user(id, name_, username_);
+                let _user = db_manager.create_user(id, name_, username_);
+             
+                if _user.is_err() {
+                    cx.requester.send_message(id, *WRONG).await?;
+                    return Ok(())
+                }
+
+                user_ = _user.unwrap();
             }
-            response = format!("https://t.me/FeelMeBot?start={}", user_.nickname);
+            response = format!("{}{}", *BOT_URL, user_.nickname);
 
         } else if data == "cancel" {
             let redis_url = env::var("REDIS_URL").expect("Error on getting REDIS_URL from environment variabls");
-            let client = redis::Client::open(redis_url)?;
-            let mut con = client.get_connection()?;
-            let _: () = redis::cmd("DEL")
+            
+            let client = redis::Client::open(redis_url);
+
+            if client.is_err() {
+                cx.requester.send_message(id, *WRONG).await?;
+                return Ok(())
+            }
+        
+            let con = client.unwrap().get_connection();
+            
+            if con.is_err() {
+                cx.requester.send_message(id, *WRONG).await?;
+                return Ok(())
+            }
+
+            let mut con = con.unwrap();
+
+            let del: RedisResult<()> = redis::cmd("DEL")
             .arg(id)
-            .query(&mut con)
-            .unwrap();
-            cx.requester.send_message(id, String::from("Cancel sendig music")).await?;
+            .query(&mut con);
+
+            if del.is_err() {
+                // log here
+            }
+            
+            cx.requester.send_message(id, *CANCEL_SENDING).await?;
+            
             return Ok(())
 
         } else if data.starts_with("feedback_") {
             let splited: Vec<&str> = data.split("_").collect();
+
             let to_id = splited[1].parse::<i64>().unwrap();
+            
             let db_manager = DBManager::new(&databse_url);
+            
+            if db_manager.is_err() {
+                cx.requester.send_message(id, *WRONG).await?;
+                return Ok(())
+            }
+
+            let db_manager = db_manager.unwrap();
+
             let target_user = db_manager.get_user_by_id(to_id);
 
-            if target_user.is_some() && db_manager.is_in_blacklist(&(target_user.unwrap()), id) {
-                response = "You can't send Feedback\nYou are blocked".into();
-            } else if db_manager.history_exists(id, to_id, splited[2].parse::<i32>().unwrap(), String::from(splited[3]), *FEEDBACK) {
-                response = String::from("Feedback is sent before");
+            if target_user.is_err() {
+                cx.requester.send_message(id, *WRONG).await?;
+                return Ok(())
+            }
+
+            let target_user = target_user.unwrap();
+
+            let is_in_blacklist;
+
+            if let Some(t_user) = target_user {
+                is_in_blacklist = db_manager.is_in_blacklist(&t_user, id);  
+
+                if is_in_blacklist.is_err() {
+                    cx.requester.send_message(id, *WRONG).await?;
+                    return Ok(())
+                }
             } else {
-                let client = redis::Client::open(redis_url)?;
-                let mut con = client.get_connection()?;
-                let _: () = redis::cmd("SET")
-                .arg(id)
-                .arg(splited[1..].join("_"))
-                .query(&mut con)
-                .unwrap();
-                response = String::from("Send Feedback Text");
+                is_in_blacklist = Ok(false);
+            }
+        
+            if is_in_blacklist.unwrap() {
+                response = String::from(*FEEDBACK_BLOCKED);
+            } else {
+                let history_exists = db_manager
+                .history_exists(id, to_id, splited[2].parse::<i32>().unwrap(), String::from(splited[3]), *FEEDBACK);
+                
+
+                if history_exists.is_err() {
+                    cx.requester.send_message(id, *WRONG).await?;
+                    return Ok(())
+                }
+
+                if history_exists.unwrap() {
+                    response = String::from(*FEEDBACK_SENT);
+                } else {
+                    let client = redis::Client::open(redis_url);
+                 
+                    if client.is_err() {
+                        cx.requester.send_message(id, *WRONG).await?;
+                        return Ok(())
+                    }
+
+                    let con = client.unwrap().get_connection();
+
+                    if con.is_err() {
+                        cx.requester.send_message(id, *WRONG).await?;
+                        return Ok(())
+                    }
+
+                    let mut con = con.unwrap();
+
+                    let res: RedisResult<()> = redis::cmd("SET")
+                    .arg(id)
+                    .arg(splited[1..].join("_"))
+                    .query(&mut con);
+
+                    if res.is_err() {
+                        cx.requester.send_message(id, *WRONG).await?;
+                        return Ok(())
+                    }
+
+                    response = String::from(*FEEDBACK_SEND);
+                }
             }
             cx.requester.send_message(id, response).await?;
             return Ok(())
 
         } else if data.starts_with("report_") {
             let splited: Vec<&str> = data.split("_").collect();
+
             let to_id = splited[1].parse::<i64>().unwrap();
+
             let msg_id = splited[2].parse::<i32>().unwrap();
+
             let db_manager = DBManager::new(&databse_url);
-            db_manager.set_to_blacklist(id, to_id);
-            db_manager.set_history(id, to_id, *REPORT, msg_id, None);
-            response = "User is reported and blocked".into();
+
+            if db_manager.is_err() {
+                cx.requester.send_message(id, *WRONG).await?;
+                return Ok(())
+            }
+
+            let db_manager = db_manager.unwrap();
+
+            let set_to_blacklist = db_manager.set_to_blacklist(id, to_id);
+
+            let set_history = db_manager.set_history(id, to_id, *REPORT, msg_id, None);
+
+
+            if set_to_blacklist.is_err() || set_history.is_err() {
+                // log error
+            }
+
+            response = String::from(*USER_REPORTED_BLOCKED);
+
         } else {
-            response = String::from(HELPTEXT.clone());
+            response = String::from(*HELPTEXT);
         }
 
         cx.requester.send_message(id, response)
