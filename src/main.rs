@@ -83,22 +83,57 @@ async fn callback(
         .query(&mut con);
 
         if let Ok(to_id) = target_id {
-            let au = InputFile::file_id(&audio.file_id);
+            let target_user = db_manager.get_user_by_id(to_id);
 
-            cx.requester.send_audio(to_id, au).reply_markup(ReplyMarkup::InlineKeyboard(
-                InlineKeyboardMarkup::new(
-                    vec![
+            if target_user.is_err() {
+                cx.requester.send_message(cx.chat_id(), *WRONG).await?;
+                return Ok(())
+            }
+
+            let target_user = target_user.unwrap();
+
+            let is_in_blacklist;
+
+            let target_name;
+
+            if let Some(t_user) = target_user {
+                is_in_blacklist = db_manager.is_in_blacklist(&t_user, cx.chat_id());  
+                
+                target_name = t_user.name;
+                
+                if is_in_blacklist.is_err() {
+                    cx.requester.send_message(cx.chat_id(), *WRONG).await?;
+                    return Ok(())
+                }
+            } else {
+                is_in_blacklist = Ok(false);
+                target_name = String::from("this user");
+            }
+
+            if is_in_blacklist.unwrap() {
+                cx.requester.send_message(cx.chat_id(), format!("{} {}\n{}", *BLOCKED_TEXT1, target_name, *BLOCKED_TEXT2)).await?;
+            } else {
+                let au = InputFile::file_id(&audio.file_id);
+
+                cx.requester.send_audio(to_id, au).reply_markup(ReplyMarkup::InlineKeyboard(
+                    InlineKeyboardMarkup::new(
                         vec![
-                            InlineKeyboardButton::callback("Feedback".into(), format!("feedback_{}_{}_{}", cx.chat_id(), cx.update.id, audio.file_unique_id)),
-                            InlineKeyboardButton::callback("Report User".into(), format!("report_{}_{}", cx.chat_id(), cx.update.id))
+                            vec![
+                                InlineKeyboardButton::callback("Feedback".into(), format!("feedback_{}_{}_{}", cx.chat_id(), cx.update.id, audio.file_unique_id)),
+                                InlineKeyboardButton::callback("Report User".into(), format!("report_{}_{}", cx.chat_id(), cx.update.id))
+                            ]
                         ]
-                    ]
-                )
-            )).await?;
-
-            db_manager.set_history(cx.chat_id(), to_id, *LOG, cx.update.id, Some(audio.file_unique_id.clone()));
-
-            cx.requester.send_message(cx.chat_id(), "Music Has Been send").await?;
+                    )
+                )).await?;
+    
+                let history_result = db_manager.set_history(cx.chat_id(), to_id, *LOG, cx.update.id, Some(audio.file_unique_id.clone()));
+                
+                if history_result.is_err() {
+                    // log error
+                }
+                
+                cx.requester.send_message(cx.chat_id(), String::from(*HAS_BEEN_SENT)).await?;
+            }
 
             let del: RedisResult<()> = redis::cmd("DEL")
                                .arg(cx.chat_id())
@@ -306,15 +341,20 @@ async fn q_callback(cx: UpdateWithCx<AutoSend<Bot>, CallbackQuery>) -> Result<()
 
             let set_to_blacklist = db_manager.set_to_blacklist(id, to_id);
 
-            let set_history = db_manager.set_history(id, to_id, *REPORT, msg_id, None);
 
 
-            if set_to_blacklist.is_err() || set_history.is_err() {
+            if set_to_blacklist.is_err() {
                 // log error
             }
-
-            response = String::from(*USER_REPORTED_BLOCKED);
-
+            if !set_to_blacklist.unwrap() {
+                response = String::from(*REPORTED_BEFORE);
+            } else {
+                let set_history = db_manager.set_history(id, to_id, *REPORT, msg_id, None);
+                if set_history.is_err() {
+                    // log error
+                }
+                response = String::from(*USER_REPORTED_BLOCKED);
+            }
         } else {
             response = String::from(*HELPTEXT);
         }

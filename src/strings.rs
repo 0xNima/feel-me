@@ -53,6 +53,10 @@ lazy_static! {
 
     pub static ref UNKNOWN_TARGET: &'static str = "The target is unknown\nClick on target user's link and then send the music";
 
+    pub static ref REPORTED_BEFORE: &'static str = "User already is reported";
+
+    pub static ref HAS_BEEN_SENT: &'static str = "Music Has Been send";
+    
     pub static ref LOG: i16 = 0;
 
     pub static ref FEEDBACK: i16 = 1;

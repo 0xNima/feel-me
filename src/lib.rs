@@ -161,7 +161,7 @@ impl DBManager {
         Ok(false)
     }
 
-    pub fn set_to_blacklist(&self, rter_id: i64, rted_id: i64) -> Result<()>{
+    pub fn set_to_blacklist(&self, rter_id: i64, rted_id: i64) -> Result<bool>{
         use schema::blacklists;
         let blacklist = NewBlacklist {
             reporter_id: rter_id,
@@ -170,12 +170,21 @@ impl DBManager {
         };
         let res = diesel::insert_into(blacklists::table)
         .values(&blacklist)
-        .execute(&self.connection);
-        if res.is_err() {
+        .execute(&self.connection)
+        .unwrap_or_else(|err| {
+            match err {
+                diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::UniqueViolation, _) => 1000,
+                _ => 2000
+            }
+        });
+        if res == 2000 {
             // log *SET_BL_ERR
             return Err(())
         }
-        Ok(())
+        if res == 1000 {
+            return Ok(false)
+        }
+        Ok(true)
     }
 
     pub fn is_in_blacklist(&self, reporter: &User, rted_id: i64) -> Result<bool> {
@@ -191,6 +200,8 @@ impl DBManager {
         }
         Ok(blacklist.unwrap().len() > 0)
     }
+
+
 }
 
 fn create_nickname() -> String{
